@@ -15,6 +15,9 @@
 #include "tinymm.h"
 
 #include <errno.h>
+#if WITH_THREADS
+#include <pthread.h>
+#endif
 #include <string.h>
 
 struct tinymm_page {
@@ -28,7 +31,24 @@ struct tinymm {
 	void (*free)(void *);
 	size_t page_size;
 	struct tinymm_page *page_list;
+#if WITH_THREADS
+	pthread_mutex_t mutex;
+#endif
 };
+
+static void tinymm_lock(struct tinymm *mm)
+{
+#if WITH_THREADS
+	pthread_mutex_lock(&mm->mutex);
+#endif
+}
+
+static void tinymm_unlock(struct tinymm *mm)
+{
+#if WITH_THREADS
+	pthread_mutex_unlock(&mm->mutex);
+#endif
+}
 
 static void tinymm_free_page(struct tinymm *mm, struct tinymm_page *page)
 {
@@ -47,6 +67,7 @@ struct tinymm *tinymm_init(void * (*alloc)(size_t), void (*free)(void *),
 			   size_t page_size)
 {
 	struct tinymm *mm;
+	int ret;
 
 	if (!alloc || !free) {
 		errno = EINVAL;
@@ -58,6 +79,15 @@ struct tinymm *tinymm_init(void * (*alloc)(size_t), void (*free)(void *),
 		errno = ENOMEM;
 		return NULL;
 	}
+
+#if WITH_THREADS
+	ret = pthread_mutex_init(&mm->mutex, NULL);
+	if (ret) {
+		(*free)(mm);
+		errno = -ret;
+		return NULL;
+	}
+#endif
 
 	mm->alloc = alloc;
 	mm->free = free;
@@ -76,6 +106,10 @@ void tinymm_shutdown(struct tinymm *mm)
 		tinymm_free_page(mm, page);
 	}
 
+#if WITH_THREADS
+	pthread_mutex_destroy(&mm->mutex);
+#endif
+
 	(*mm->free)(mm);
 }
 
@@ -88,6 +122,8 @@ void * tinymm_malloc(struct tinymm *mm, size_t len)
 	if (len & (sizeof(void *) - 1))
 		len = (len & ~(sizeof(void *) - 1)) + sizeof(void *);
 
+	tinymm_lock(mm);
+
 	for (prev = NULL, page = mm->page_list; page;
 	     prev = page, page = page->next)
 		if (page->ptr + len < page->base + mm->page_size)
@@ -96,6 +132,7 @@ void * tinymm_malloc(struct tinymm *mm, size_t len)
 	if (!page) {
 		page = (*mm->alloc)(sizeof(*page) + mm->page_size);
 		if (!page) {
+			tinymm_unlock(mm);
 			errno = ENOMEM;
 			return NULL;
 		}
@@ -115,6 +152,8 @@ void * tinymm_malloc(struct tinymm *mm, size_t len)
 	page->ptr += len;
 	page->alloc_cnt++;
 
+	tinymm_unlock(mm);
+
 	return ptr;
 }
 
@@ -133,10 +172,14 @@ void tinymm_free(struct tinymm *mm, void *ptr)
 {
 	struct tinymm_page *page;
 
+	tinymm_lock(mm);
+
 	for (page = mm->page_list; page; page = page->next)
 		if (ptr >= page->base && ptr < page->base + mm->page_size)
 			break;
 
 	if (page && !--page->alloc_cnt)
 		tinymm_free_page(mm, page);
+
+	tinymm_unlock(mm);
 }

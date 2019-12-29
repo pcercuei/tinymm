@@ -20,6 +20,16 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 	C_EXTENSIONS OFF
 )
 
+option(WITH_THREADS "Thread-safe code" ON)
+if (WITH_THREADS)
+	find_library(PTHREAD_LIBRARIES pthread REQUIRED)
+	find_path(PTHREAD_INCLUDE_DIR pthread.h REQUIRED)
+
+	include_directories(${PTHREAD_INCLUDE_DIR})
+	target_link_libraries(${PROJECT_NAME} PRIVATE ${PTHREAD_LIBRARIES})
+	target_compile_definitions(${PROJECT_NAME} PRIVATE WITH_THREADS)
+endif (WITH_THREADS)
+
 include(GNUInstallDirs)
 install(TARGETS ${PROJECT_NAME}
 	ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
